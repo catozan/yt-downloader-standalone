@@ -88,8 +88,8 @@ Module Program
             "║     ██║      ██║       ██████╔╝╚██████╔╝╚███╔███╔╝██║ ╚████║███████╗╚██████╔╝ ║",
             "║     ╚═╝      ╚═╝       ╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝  ║",
             "║                                                                               ║",
-            "║                    YouTube Video & Audio Downloader                          ║",
-            "║                         Fast - Reliable - Feature-Rich                       ║",
+            "║                     YouTube Video & Audio Downloader                          ║",
+            "║                      Fast - Reliable - Feature-Rich                           ║",
             "╚═══════════════════════════════════════════════════════════════════════════════╝"
         }
         
@@ -622,21 +622,6 @@ Module Program
         System.Console.WriteLine("4. Or use: winget install ffmpeg")
         System.Console.ResetColor()
         Return False
-    End Function
-
-    Private Function IsValidYouTubeUrl(url As String) As Boolean
-        If String.IsNullOrWhiteSpace(url) Then Return False
-        
-        ' Common YouTube URL patterns
-        Dim patterns As String() = {
-            "youtube.com/watch",
-            "youtu.be/",
-            "youtube.com/embed/",
-            "youtube.com/v/",
-            "m.youtube.com/watch"
-        }
-        
-        Return patterns.Any(Function(pattern) url.ToLower().Contains(pattern))
     End Function
 
     Private Async Function DownloadWithYtDlp(url As String, outputPath As String, quality As String, format As String) As Task(Of Boolean)
