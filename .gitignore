@@ -4,6 +4,9 @@ obj/
 *.exe
 *.pdb
 
+# Allow Release executable
+!Release/YouTubeDownloader.exe
+
 # Visual Studio
 .vs/
 *.user
