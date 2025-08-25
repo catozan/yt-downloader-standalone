@@ -11,13 +11,8 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishReadyToRun>true</PublishReadyToRun>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Compile Remove="MainForm.vb" />
-    <Compile Remove="HistoryForm.vb" />
-    <Compile Remove="ProgramGUI.vb" />
-  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="YoutubeExplode" Version="6.5.4" />
