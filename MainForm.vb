@@ -247,49 +247,130 @@ Public Class MainForm
 
             lblStatus.Text = "Getting video information..."
             
-            ' Get video information with retry logic
-            Dim retryCount As Integer = 0
-            Dim maxRetries As Integer = 3
-            
-            Do While retryCount < maxRetries
-                Try
-                    currentVideo = Await youtube.Videos.GetAsync(txtUrl.Text)
-                    Exit Do
-                Catch ex As Exception When retryCount < maxRetries - 1
-                    retryCount += 1
-                    lblStatus.Text = $"Retry attempt {retryCount}/{maxRetries}..."
-                    ' Use synchronous delay to avoid await in catch
-                    System.Threading.Thread.Sleep(2000)
-                End Try
-            Loop
+            ' Try multiple approaches for better reliability against cipher errors
+            Dim success As Boolean = False
+            Dim lastError As Exception = Nothing
 
-            If currentVideo Is Nothing Then
-                Throw New Exception("Failed to get video information after multiple attempts")
+            ' Method 1: Standard approach with retries
+            For attempt As Integer = 1 To 3
+                Try
+                    lblStatus.Text = $"Analyzing video... attempt {attempt}/3"
+                    
+                    ' Use fresh client for each attempt
+                    youtube = New YoutubeClient()
+                    
+                    ' Progressive delay between attempts
+                    If attempt > 1 Then
+                        System.Threading.Thread.Sleep(2000 * attempt)
+                    End If
+
+                    currentVideo = Await youtube.Videos.GetAsync(txtUrl.Text)
+                    streamManifest = Await youtube.Videos.Streams.GetManifestAsync(currentVideo.Id)
+                    
+                    success = True
+                    Exit For
+                    
+                Catch ex As Exception
+                    lastError = ex
+                    If attempt < 3 Then
+                        lblStatus.Text = $"Attempt {attempt} failed, retrying..."
+                    End If
+                    
+                    ' Clear any cached data
+                    GC.Collect()
+                End Try
+            Next
+
+            ' Method 2: Try with extracted video ID only
+            If Not success Then
+                lblStatus.Text = "Trying alternative method..."
+                Try
+                    Dim videoId = ExtractVideoId(txtUrl.Text)
+                    If Not String.IsNullOrEmpty(videoId) Then
+                        youtube = New YoutubeClient()
+                        currentVideo = Await youtube.Videos.GetAsync(videoId)
+                        
+                        ' Small delay before getting streams
+                        System.Threading.Thread.Sleep(1500)
+                        streamManifest = Await youtube.Videos.Streams.GetManifestAsync(videoId)
+                        success = True
+                    End If
+                Catch ex As Exception
+                    lastError = ex
+                End Try
             End If
 
-            lblStatus.Text = "Getting available formats..."
-            
-            ' Get stream manifest with retry logic
-            retryCount = 0
-            Do While retryCount < maxRetries
-                Try
-                    streamManifest = Await youtube.Videos.Streams.GetManifestAsync(currentVideo.Id)
-                    Exit Do
-                Catch ex As Exception When retryCount < maxRetries - 1
-                    retryCount += 1
-                    lblStatus.Text = $"Getting formats... retry {retryCount}/{maxRetries}"
-                    System.Threading.Thread.Sleep(2000)
-                    ' Try with a fresh client instance
-                    youtube = New YoutubeClient()
-                End Try
-            Loop
+            ' Method 3: Try different URL formats
+            If Not success Then
+                lblStatus.Text = "Trying URL variations..."
+                Dim videoId = ExtractVideoId(txtUrl.Text)
+                If Not String.IsNullOrEmpty(videoId) Then
+                    Dim urlVariations() As String = {
+                        $"https://www.youtube.com/watch?v={videoId}",
+                        $"https://youtu.be/{videoId}",
+                        $"https://m.youtube.com/watch?v={videoId}"
+                    }
+                    
+                    For Each testUrl In urlVariations
+                        Try
+                            youtube = New YoutubeClient()
+                            currentVideo = Await youtube.Videos.GetAsync(testUrl)
+                            System.Threading.Thread.Sleep(1000)
+                            streamManifest = Await youtube.Videos.Streams.GetManifestAsync(currentVideo.Id)
+                            success = True
+                            Exit For
+                        Catch
+                            Continue For
+                        End Try
+                    Next
+                End If
+            End If
 
-            If streamManifest Is Nothing Then
-                Throw New Exception("Could not retrieve video formats. This video might be:" & vbCrLf &
-                                  "- Age restricted or private" & vbCrLf &
-                                  "- Region blocked" & vbCrLf &
-                                  "- Recently uploaded (try again in a few minutes)" & vbCrLf &
-                                  "- Protected by YouTube's anti-bot measures")
+            If Not success OrElse currentVideo Is Nothing OrElse streamManifest Is Nothing Then
+                ' Method 4: Fallback to yt-dlp for video info
+                lblStatus.Text = "Trying yt-dlp fallback..."
+                Try
+                    Dim ytDlpInfo = Await GetVideoInfoWithYtDlp(txtUrl.Text)
+                    If ytDlpInfo IsNot Nothing Then
+                        ' Create a mock video object for display
+                        lblVideoInfo.Text = $"Title: {ytDlpInfo("title")}" & vbCrLf &
+                                          $"Duration: {ytDlpInfo("duration")}" & vbCrLf &
+                                          $"[Using yt-dlp fallback method]"
+                        
+                        ' Add a simple download option
+                        lstFormats.Items.Clear()
+                        lstFormats.Items.Add(New YtDlpFormatItem("Best Quality Video (yt-dlp)", "best"))
+                        lstFormats.Items.Add(New YtDlpFormatItem("Best Quality Audio (yt-dlp)", "bestaudio"))
+                        lstFormats.SelectedIndex = 0
+                        
+                        lblStatus.Text = "Video analyzed with yt-dlp. Select format to download."
+                        success = True
+                        Return
+                    End If
+                Catch ex As Exception
+                    lastError = ex
+                End Try
+            End If
+
+            If Not success Then
+                ' Enhanced error message based on the type of error
+                Dim errorMessage As String = "Could not analyze this video using any method."
+                
+                If lastError IsNot Nothing Then
+                    If lastError.Message.Contains("cipher") OrElse lastError.Message.Contains("manifest") Then
+                        errorMessage = "YouTube cipher protection detected." & vbCrLf & vbCrLf &
+                                     "This video has enhanced protection. Solutions:" & vbCrLf &
+                                     "• Try a different, older video to test the app" & vbCrLf &
+                                     "• Popular/recent videos often have stronger protection" & vbCrLf &
+                                     "• Try again in 10-15 minutes" & vbCrLf &
+                                     "• Some videos may be permanently blocked from downloading" & vbCrLf & vbCrLf &
+                                     "Consider using the console version with yt-dlp for better compatibility."
+                    Else
+                        errorMessage &= vbCrLf & vbCrLf & "Last error: " & lastError.Message
+                    End If
+                End If
+                
+                Throw New Exception(errorMessage)
             End If
 
             ' Update video info
@@ -328,6 +409,40 @@ Public Class MainForm
         End Try
     End Sub
 
+    Private Async Function GetVideoInfoWithYtDlp(url As String) As Task(Of Dictionary(Of String, String))
+        Try
+            Dim startInfo As New ProcessStartInfo With {
+                .FileName = "python",
+                .Arguments = $"-m yt_dlp --print title,duration --no-download ""{url}""",
+                .UseShellExecute = False,
+                .RedirectStandardOutput = True,
+                .RedirectStandardError = True,
+                .CreateNoWindow = True
+            }
+
+            Using process As New Process With {.StartInfo = startInfo}
+                If process.Start() Then
+                    Dim output = Await process.StandardOutput.ReadToEndAsync()
+                    process.WaitForExit()
+                    
+                    If process.ExitCode = 0 AndAlso Not String.IsNullOrWhiteSpace(output) Then
+                        Dim lines = output.Split(vbLf).Where(Function(l) Not String.IsNullOrWhiteSpace(l)).ToArray()
+                        If lines.Length >= 2 Then
+                            Return New Dictionary(Of String, String) From {
+                                {"title", lines(0).Trim()},
+                                {"duration", lines(1).Trim()}
+                            }
+                        End If
+                    End If
+                End If
+            End Using
+        Catch
+            ' Ignore yt-dlp errors
+        End Try
+        
+        Return Nothing
+    End Function
+
     Private Function IsValidYouTubeUrl(url As String) As Boolean
         If String.IsNullOrWhiteSpace(url) Then Return False
         
@@ -341,6 +456,30 @@ Public Class MainForm
         }
         
         Return patterns.Any(Function(pattern) url.ToLower().Contains(pattern))
+    End Function
+
+    Private Function ExtractVideoId(url As String) As String
+        Try
+            If String.IsNullOrWhiteSpace(url) Then Return Nothing
+            
+            ' Handle different URL formats
+            If url.Contains("youtube.com/watch?v=") Then
+                Dim match = System.Text.RegularExpressions.Regex.Match(url, "v=([^&]+)")
+                If match.Success Then Return match.Groups(1).Value
+            ElseIf url.Contains("youtu.be/") Then
+                Dim parts = url.Split("/"c)
+                If parts.Length > 0 Then
+                    Return parts.Last().Split("?"c)(0)
+                End If
+            ElseIf url.Contains("youtube.com/embed/") Then
+                Dim match = System.Text.RegularExpressions.Regex.Match(url, "embed/([^?]+)")
+                If match.Success Then Return match.Groups(1).Value
+            End If
+            
+            Return Nothing
+        Catch
+            Return Nothing
+        End Try
     End Function
 
     Private Sub UpdateVideoInfo()
@@ -426,15 +565,31 @@ Public Class MainForm
 
     Private Sub LstFormats_SelectedIndexChanged(sender As Object, e As EventArgs)
         If lstFormats.SelectedItem IsNot Nothing Then
-            Dim formatItem As FormatItem = CType(lstFormats.SelectedItem, FormatItem)
-            selectedStreamInfo = formatItem.StreamInfo
-            btnDownload.Enabled = True
+            If TypeOf lstFormats.SelectedItem Is FormatItem Then
+                Dim formatItem As FormatItem = CType(lstFormats.SelectedItem, FormatItem)
+                selectedStreamInfo = formatItem.StreamInfo
+                btnDownload.Enabled = True
+            ElseIf TypeOf lstFormats.SelectedItem Is YtDlpFormatItem Then
+                ' Enable download for yt-dlp items
+                btnDownload.Enabled = True
+            End If
         Else
             btnDownload.Enabled = False
         End If
     End Sub
 
     Private Async Sub BtnDownload_Click(sender As Object, e As EventArgs)
+        If lstFormats.SelectedItem Is Nothing Then
+            MessageBox.Show("Please select a format to download", "No Format Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        ' Check if this is a yt-dlp format item
+        If TypeOf lstFormats.SelectedItem Is YtDlpFormatItem Then
+            Await DownloadWithYtDlpGui(CType(lstFormats.SelectedItem, YtDlpFormatItem))
+            Return
+        End If
+
         If selectedStreamInfo Is Nothing OrElse currentVideo Is Nothing Then
             MessageBox.Show("Please select a format to download", "No Format Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
@@ -576,6 +731,96 @@ Public Class MainForm
         End Try
     End Sub
 
+    Private Async Function DownloadWithYtDlpGui(formatItem As YtDlpFormatItem) As Task
+        Try
+            btnDownload.Enabled = False
+            btnAnalyze.Enabled = False
+            progressBar.Value = 0
+            lblStatus.Text = "Starting yt-dlp download..."
+
+            ' Create output filename
+            Dim fileName As String = "%(title)s.%(ext)s"
+            Dim outputPath As String = txtOutputPath.Text
+            
+            If Not Directory.Exists(outputPath) Then
+                Directory.CreateDirectory(outputPath)
+            End If
+
+            Dim arguments As String
+            If formatItem.Format = "bestaudio" Then
+                arguments = $"--extract-audio --audio-format mp3 --audio-quality 0 -o ""{Path.Combine(outputPath, fileName)}"" ""{txtUrl.Text}"""
+            Else
+                arguments = $"-f {formatItem.Format} --no-playlist -o ""{Path.Combine(outputPath, fileName)}"" ""{txtUrl.Text}"""
+            End If
+
+            Dim startInfo As New ProcessStartInfo With {
+                .FileName = "python",
+                .Arguments = $"-m yt_dlp {arguments}",
+                .UseShellExecute = False,
+                .RedirectStandardOutput = True,
+                .RedirectStandardError = True,
+                .CreateNoWindow = True,
+                .WorkingDirectory = outputPath
+            }
+
+            Using process As New Process With {.StartInfo = startInfo}
+                If Not process.Start() Then
+                    Throw New Exception("Failed to start yt-dlp process")
+                End If
+
+                ' Monitor progress
+                Dim progressTask = Task.Run(Async Function()
+                    Dim reader = process.StandardOutput
+                    While Not reader.EndOfStream
+                        Try
+                            Dim line = Await reader.ReadLineAsync()
+                            If Not String.IsNullOrWhiteSpace(line) Then
+                                Me.Invoke(Sub()
+                                    If line.Contains("[download]") AndAlso line.Contains("%") Then
+                                        ' Extract percentage
+                                        Dim percentMatch = System.Text.RegularExpressions.Regex.Match(line, "(\d+\.?\d*)%")
+                                        If percentMatch.Success Then
+                                            Dim percent As Double
+                                            If Double.TryParse(percentMatch.Groups(1).Value, percent) Then
+                                                progressBar.Value = Math.Min(CInt(percent), 100)
+                                                lblStatus.Text = $"Downloading... {percent:F1}%"
+                                            End If
+                                        End If
+                                    End If
+                                End Sub)
+                            End If
+                        Catch
+                            Continue While
+                        End Try
+                    End While
+                End Function)
+
+                process.WaitForExit()
+                Await progressTask
+
+                If process.ExitCode = 0 Then
+                    progressBar.Value = 100
+                    lblStatus.Text = "Download completed with yt-dlp!"
+                    
+                    MessageBox.Show("Download completed successfully using yt-dlp!" & vbCrLf & vbCrLf &
+                                  "Files saved to: " & outputPath, 
+                                  "Download Complete", 
+                                  MessageBoxButtons.OK, 
+                                  MessageBoxIcon.Information)
+                Else
+                    Throw New Exception("yt-dlp download failed")
+                End If
+            End Using
+
+        Catch ex As Exception
+            MessageBox.Show($"yt-dlp download failed: {ex.Message}", "Download Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            lblStatus.Text = "Download failed"
+        Finally
+            btnDownload.Enabled = True
+            btnAnalyze.Enabled = True
+        End Try
+    End Function
+
     Private Sub SaveDownloadHistory(title As String, url As String, filePath As String)
         Try
             Dim historyFile As String = Path.Combine(Application.StartupPath, "download_history.json")
@@ -633,6 +878,21 @@ Public Class MainForm
         Public Sub New(displayText As String, streamInfo As IStreamInfo)
             Me.DisplayText = displayText
             Me.StreamInfo = streamInfo
+        End Sub
+        
+        Public Overrides Function ToString() As String
+            Return DisplayText
+        End Function
+    End Class
+
+    ' Helper class for yt-dlp format items
+    Private Class YtDlpFormatItem
+        Public Property DisplayText As String
+        Public Property Format As String
+        
+        Public Sub New(displayText As String, format As String)
+            Me.DisplayText = displayText
+            Me.Format = format
         End Sub
         
         Public Overrides Function ToString() As String
