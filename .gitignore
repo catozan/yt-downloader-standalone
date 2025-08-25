@@ -1,0 +1,47 @@
+# Build results
+bin/
+obj/
+*.exe
+*.pdb
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# User-specific files
+Downloads/
+download_history.txt
+
+# Temp files
+*.tmp
+*.temp
+
+# Logs
+*.log
+
+# Package files
+*.nupkg
+*.snupkg
+
+# NuGet
+packages/
+.nuget/
+
+# MSBuild Binary and Structured Log
+*.binlog
+
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# Folder config file
+Desktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# VS Code
+.vscode/
