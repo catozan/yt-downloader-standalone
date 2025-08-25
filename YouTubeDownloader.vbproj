@@ -14,6 +14,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="MainForm.vb" />
+    <Compile Remove="HistoryForm.vb" />
+    <Compile Remove="ProgramGUI.vb" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="YoutubeExplode" Version="6.5.4" />
     <PackageReference Include="YoutubeExplode.Converter" Version="6.5.4" />
     <PackageReference Include="FFMpegCore" Version="5.0.2" />

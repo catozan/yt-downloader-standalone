@@ -234,10 +234,63 @@ Public Class MainForm
             lblStatus.Text = "Analyzing video..."
             lstFormats.Items.Clear()
             btnDownload.Enabled = False
+            currentVideo = Nothing
+            streamManifest = Nothing
 
-            ' Get video information
-            currentVideo = Await youtube.Videos.GetAsync(txtUrl.Text)
-            streamManifest = Await youtube.Videos.Streams.GetManifestAsync(currentVideo.Id)
+            ' Validate URL format first
+            If Not IsValidYouTubeUrl(txtUrl.Text) Then
+                Throw New ArgumentException("Please enter a valid YouTube URL (youtube.com/watch?v= or youtu.be/)")
+            End If
+
+            ' Create new client instance to avoid cached issues
+            youtube = New YoutubeClient()
+
+            lblStatus.Text = "Getting video information..."
+            
+            ' Get video information with retry logic
+            Dim retryCount As Integer = 0
+            Dim maxRetries As Integer = 3
+            
+            Do While retryCount < maxRetries
+                Try
+                    currentVideo = Await youtube.Videos.GetAsync(txtUrl.Text)
+                    Exit Do
+                Catch ex As Exception When retryCount < maxRetries - 1
+                    retryCount += 1
+                    lblStatus.Text = $"Retry attempt {retryCount}/{maxRetries}..."
+                    ' Use synchronous delay to avoid await in catch
+                    System.Threading.Thread.Sleep(2000)
+                End Try
+            Loop
+
+            If currentVideo Is Nothing Then
+                Throw New Exception("Failed to get video information after multiple attempts")
+            End If
+
+            lblStatus.Text = "Getting available formats..."
+            
+            ' Get stream manifest with retry logic
+            retryCount = 0
+            Do While retryCount < maxRetries
+                Try
+                    streamManifest = Await youtube.Videos.Streams.GetManifestAsync(currentVideo.Id)
+                    Exit Do
+                Catch ex As Exception When retryCount < maxRetries - 1
+                    retryCount += 1
+                    lblStatus.Text = $"Getting formats... retry {retryCount}/{maxRetries}"
+                    System.Threading.Thread.Sleep(2000)
+                    ' Try with a fresh client instance
+                    youtube = New YoutubeClient()
+                End Try
+            Loop
+
+            If streamManifest Is Nothing Then
+                Throw New Exception("Could not retrieve video formats. This video might be:" & vbCrLf &
+                                  "- Age restricted or private" & vbCrLf &
+                                  "- Region blocked" & vbCrLf &
+                                  "- Recently uploaded (try again in a few minutes)" & vbCrLf &
+                                  "- Protected by YouTube's anti-bot measures")
+            End If
 
             ' Update video info
             UpdateVideoInfo()
@@ -248,15 +301,47 @@ Public Class MainForm
             ' Populate format list
             PopulateFormatList()
 
+            If lstFormats.Items.Count = 0 Then
+                Throw New Exception("No downloadable formats found for this video")
+            End If
+
             lblStatus.Text = "Video analyzed successfully. Select a format to download."
 
+        Catch ex As ArgumentException
+            MessageBox.Show(ex.Message, "Invalid URL", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            lblStatus.Text = "Invalid YouTube URL"
         Catch ex As Exception
-            MessageBox.Show($"Error analyzing video: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Dim errorMsg As String = "Error analyzing video:" & vbCrLf & vbCrLf & ex.Message
+            
+            If ex.Message.Contains("cipher") OrElse ex.Message.Contains("manifest") Then
+                errorMsg &= vbCrLf & vbCrLf & "Troubleshooting tips:" & vbCrLf &
+                          "• Try a different video URL" & vbCrLf &
+                          "• Wait a few minutes and try again" & vbCrLf &
+                          "• Check if the video is public and not age-restricted" & vbCrLf &
+                          "• Some videos may be temporarily unavailable"
+            End If
+            
+            MessageBox.Show(errorMsg, "Analysis Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
             lblStatus.Text = "Error analyzing video"
         Finally
             btnAnalyze.Enabled = True
         End Try
     End Sub
+
+    Private Function IsValidYouTubeUrl(url As String) As Boolean
+        If String.IsNullOrWhiteSpace(url) Then Return False
+        
+        ' Common YouTube URL patterns
+        Dim patterns As String() = {
+            "youtube.com/watch",
+            "youtu.be/",
+            "youtube.com/embed/",
+            "youtube.com/v/",
+            "m.youtube.com/watch"
+        }
+        
+        Return patterns.Any(Function(pattern) url.ToLower().Contains(pattern))
+    End Function
 
     Private Sub UpdateVideoInfo()
         If currentVideo IsNot Nothing Then
@@ -327,6 +412,18 @@ Public Class MainForm
         End If
     End Function
 
+    Private Function FormatFileSize(bytes As Long) As String
+        If bytes < 1024 Then
+            Return $"{bytes} B"
+        ElseIf bytes < 1024 * 1024 Then
+            Return $"{bytes / 1024:F1} KB"
+        ElseIf bytes < 1024L * 1024 * 1024 Then
+            Return $"{bytes / (1024 * 1024):F1} MB"
+        Else
+            Return $"{bytes / (1024L * 1024 * 1024):F1} GB"
+        End If
+    End Function
+
     Private Sub LstFormats_SelectedIndexChanged(sender As Object, e As EventArgs)
         If lstFormats.SelectedItem IsNot Nothing Then
             Dim formatItem As FormatItem = CType(lstFormats.SelectedItem, FormatItem)
@@ -347,24 +444,87 @@ Public Class MainForm
             btnDownload.Enabled = False
             btnAnalyze.Enabled = False
             progressBar.Value = 0
-            lblStatus.Text = "Starting download..."
+            lblStatus.Text = "Preparing download..."
 
-            ' Generate filename
+            ' Generate safe filename
             Dim safeTitle As String = String.Join("_", currentVideo.Title.Split(Path.GetInvalidFileNameChars()))
+            If safeTitle.Length > 100 Then
+                safeTitle = safeTitle.Substring(0, 100)
+            End If
+            
             Dim extension As String = selectedStreamInfo.Container.Name
             Dim fileName As String = $"{safeTitle}.{extension}"
             Dim filePath As String = Path.Combine(txtOutputPath.Text, fileName)
 
+            ' Check if file already exists
+            If File.Exists(filePath) Then
+                Dim result = MessageBox.Show($"File '{fileName}' already exists." & vbCrLf & vbCrLf &
+                                           "Do you want to overwrite it?", 
+                                           "File Exists", 
+                                           MessageBoxButtons.YesNo, 
+                                           MessageBoxIcon.Question)
+                
+                If result = DialogResult.No Then
+                    lblStatus.Text = "Download cancelled"
+                    Return
+                End If
+            End If
+
             ' Create progress reporter
             Dim progress As New Progress(Of Double)(Sub(p) 
-                                                      Me.Invoke(Sub() 
-                                                                    progressBar.Value = CInt(p * 100)
-                                                                    lblStatus.Text = $"Downloading... {p:P0}"
-                                                                End Sub)
+                                                      Try
+                                                          Me.Invoke(Sub() 
+                                                                        progressBar.Value = Math.Min(CInt(p * 100), 100)
+                                                                        lblStatus.Text = $"Downloading... {p:P0}"
+                                                                    End Sub)
+                                                      Catch
+                                                          ' Ignore invoke errors during download
+                                                      End Try
                                                    End Sub)
 
-            ' Download the stream
-            Await youtube.Videos.Streams.DownloadAsync(selectedStreamInfo, filePath, progress)
+            lblStatus.Text = "Starting download..."
+
+            ' Download with retry logic
+            Dim maxRetries As Integer = 2
+            Dim retryCount As Integer = 0
+            Dim downloadSuccess As Boolean = False
+
+            Do While retryCount <= maxRetries AndAlso Not downloadSuccess
+                Try
+                    If retryCount > 0 Then
+                        lblStatus.Text = $"Retrying download... attempt {retryCount + 1}"
+                        ' Create fresh client for retry
+                        youtube = New YoutubeClient()
+                        System.Threading.Thread.Sleep(3000) ' Wait 3 seconds before retry
+                    End If
+
+                    ' Perform the download
+                    Await youtube.Videos.Streams.DownloadAsync(selectedStreamInfo, filePath, progress)
+                    downloadSuccess = True
+
+                Catch ex As Exception
+                    retryCount += 1
+                    If retryCount <= maxRetries Then
+                        lblStatus.Text = $"Download failed, retrying... ({retryCount}/{maxRetries})"
+                        
+                        ' Clean up partial file if it exists
+                        If File.Exists(filePath) Then
+                            Try
+                                File.Delete(filePath)
+                            Catch
+                                ' Ignore cleanup errors
+                            End Try
+                        End If
+                    Else
+                        Throw ' Re-throw if we've exhausted retries
+                    End If
+                End Try
+            Loop
+
+            ' Verify file was created and has content
+            If Not File.Exists(filePath) OrElse New FileInfo(filePath).Length = 0 Then
+                Throw New Exception("Download completed but file is empty or missing")
+            End If
 
             ' Update status
             lblStatus.Text = $"Download completed: {fileName}"
@@ -374,18 +534,41 @@ Public Class MainForm
             SaveDownloadHistory(currentVideo.Title, currentVideo.Url, filePath)
 
             ' Ask to open folder
-            Dim result = MessageBox.Show("Download completed successfully!" & vbCrLf & vbCrLf &
+            Dim openResult = MessageBox.Show("Download completed successfully!" & vbCrLf & vbCrLf &
+                                       $"File: {fileName}" & vbCrLf &
+                                       $"Size: {FormatFileSize(New FileInfo(filePath).Length)}" & vbCrLf & vbCrLf &
                                        "Would you like to open the download folder?", 
                                        "Download Complete", 
                                        MessageBoxButtons.YesNo, 
                                        MessageBoxIcon.Information)
             
-            If result = DialogResult.Yes Then
-                Process.Start("explorer.exe", txtOutputPath.Text)
+            If openResult = DialogResult.Yes Then
+                Process.Start("explorer.exe", $"/select,""{filePath}""")
             End If
 
         Catch ex As Exception
-            MessageBox.Show($"Error downloading video: {ex.Message}", "Download Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            ' Clean up partial file
+            Try
+                Dim filePath As String = Path.Combine(txtOutputPath.Text, $"{String.Join("_", currentVideo.Title.Split(Path.GetInvalidFileNameChars()))}.{selectedStreamInfo.Container.Name}")
+                If File.Exists(filePath) Then
+                    File.Delete(filePath)
+                End If
+            Catch
+                ' Ignore cleanup errors
+            End Try
+
+            Dim errorMsg As String = $"Download failed: {ex.Message}"
+            
+            If ex.Message.Contains("403") OrElse ex.Message.Contains("Forbidden") Then
+                errorMsg &= vbCrLf & vbCrLf & "This might be due to:" & vbCrLf &
+                          "• Video access restrictions" & vbCrLf &
+                          "• Temporary YouTube API limits" & vbCrLf &
+                          "• Try again in a few minutes"
+            ElseIf ex.Message.Contains("404") OrElse ex.Message.Contains("Not Found") Then
+                errorMsg &= vbCrLf & vbCrLf & "The video or stream may no longer be available"
+            End If
+            
+            MessageBox.Show(errorMsg, "Download Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
             lblStatus.Text = "Download failed"
         Finally
             btnDownload.Enabled = True
