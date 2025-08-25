@@ -1,11 +1,10 @@
 # Build results
 bin/
 obj/
+Release/
+ReleaseGUI/
 *.exe
 *.pdb
-
-# Allow Release executable
-!Release/YouTubeDownloader.exe
 
 # Visual Studio
 .vs/
